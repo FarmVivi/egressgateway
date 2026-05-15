@@ -27,12 +27,12 @@ permanently.
 
 ```bash
 watch -n2 "ip route show table <fwmark_decimal>"
-# → table is wiped every ~10 seconds
+# table is wiped every ~10 seconds
 ```
 
 **Agent logs show:**
 
-```
+```text
 delete route  route="<gateway-vxlan-ip> dev egress.vxlan table <mark>"
 ```
 
@@ -42,6 +42,7 @@ Routes are added, then deleted within one keepVXLAN cycle.
 
 1. `keepVXLAN` goroutine (runs every 10s, launched unconditionally at agent
    startup) iterates `peerMap` and calls:
+
    ```go
    r.ruleRoute.Ensure(r.cfg.FileConfig.VXLAN.Name, val.IPv4, val.IPv6, val.Mark, val.Mark)
    ```
@@ -49,16 +50,19 @@ Routes are added, then deleted within one keepVXLAN cycle.
 2. If `val.IPv4` is `nil` — which happens when `reconcileEgressTunnel` has not
    yet populated the peer's tunnel IP into `peerMap` (race condition at startup
    or after node restart) — `Ensure()` calls:
+
    ```go
    EnsureRoute(link, nil, FAMILY_V4, table, log)
    ```
 
 3. Inside `EnsureRoute`, the deletion condition is:
+
    ```go
    if ip == nil || route.Gw.String() != ip.String() {
        netlink.RouteDel(&route)  // deletes ALL routes when ip==nil
    }
    ```
+
    With `ip == nil`, this condition is always true, so **every route in the
    policy-routing table is deleted** before the function returns.
 
@@ -87,28 +91,28 @@ err = r.EnsureRoute(link, ipv6, netlink.FAMILY_V6, table, log)  // ipv6 may be n
 ## The Fix
 
 **File**: `pkg/agent/route/route.go`
-**Change**: 4 lines — add the same nil-guard pattern already used for `EnsureRule`
+**Change**: add the same nil-guard pattern already used for `EnsureRule`
 
 ```diff
--	err = r.EnsureRoute(link, ipv4, netlink.FAMILY_V4, table, log)
--	if err != nil {
--		return err
--	}
--	err = r.EnsureRoute(link, ipv6, netlink.FAMILY_V6, table, log)
--	if err != nil {
--		return err
-+	if ipv4 != nil {
-+		err = r.EnsureRoute(link, ipv4, netlink.FAMILY_V4, table, log)
-+		if err != nil {
-+			return err
-+		}
-+	}
-+	if ipv6 != nil {
-+		err = r.EnsureRoute(link, ipv6, netlink.FAMILY_V6, table, log)
-+		if err != nil {
-+			return err
-+		}
- 	}
+-   err = r.EnsureRoute(link, ipv4, netlink.FAMILY_V4, table, log)
+-   if err != nil {
+-       return err
+-   }
+-   err = r.EnsureRoute(link, ipv6, netlink.FAMILY_V6, table, log)
+-   if err != nil {
+-       return err
++   if ipv4 != nil {
++       err = r.EnsureRoute(link, ipv4, netlink.FAMILY_V4, table, log)
++       if err != nil {
++           return err
++       }
++   }
++   if ipv6 != nil {
++       err = r.EnsureRoute(link, ipv6, netlink.FAMILY_V6, table, log)
++       if err != nil {
++           return err
++       }
+    }
 ```
 
 When `ipv4` or `ipv6` is nil (peer tunnel IP not yet known), `EnsureRoute` is
@@ -128,44 +132,47 @@ Existing routes are preserved until the peer IP becomes available.
 
 ## Building the Patched Image
 
+The agent and controller are built from separate Dockerfiles and produce
+separate images (`egressgateway-agent` and `egressgateway-controller`).
+**Only the agent is affected by this bug** — only the agent image needs to be rebuilt.
+
 ```bash
-# From the repo root on branch fix/keepvxlan-nil-ip-wipes-routes
-IMAGE=ghcr.io/<your-user>/egressgateway:v0.6.9-patched
+# From the repo root, on branch fix/keepvxlan-nil-ip-wipes-routes
+AGENT_IMAGE=ghcr.io/farmvivi/egressgateway-agent:v0.6.9-patched
 
 docker build \
-  --build-arg TARGETPLATFORM=linux/amd64 \
-  -f ./images/egressgateway/Dockerfile \
-  -t $IMAGE .
+  --platform linux/amd64 \
+  -f images/agent/Dockerfile \
+  -t $AGENT_IMAGE \
+  .
 
-docker push $IMAGE
+# Authenticate to ghcr.io first if needed:
+# echo $GITHUB_TOKEN | docker login ghcr.io -u <github-user> --password-stdin
+
+docker push $AGENT_IMAGE
 ```
 
-Then override the image in the spidernet Helm values:
+Then override the agent image in the spidernet Helm values
+(k3s HelmChart operator in Scipio):
 
 ```yaml
-egressgateway:
+# kube/clusters/nethersphere/manifests/platform/egressgateway/helmchart-operator.yaml
+agent:
   image:
-    repository: ghcr.io/<your-user>/egressgateway
+    registry: ghcr.io
+    repository: farmvivi/egressgateway-agent
     tag: v0.6.9-patched
     pullPolicy: IfNotPresent
 ```
 
----
+### Reverting to the official image
 
-## DaemonSet Workaround (no build required)
+Once the upstream fix is merged and a new release is available
+(check [spidernet-io/egressgateway releases](https://github.com/spidernet-io/egressgateway/releases)):
 
-If a patched image is not available, a privileged DaemonSet can re-inject
-missing routes every 8 seconds (before the keepVXLAN 10s cycle).
-
-It reads `EgressTunnel` CRDs via the Kubernetes API to determine per-node
-fwmarks and VXLAN tunnel IPs, then runs `ip route replace` for any missing
-cross-node routes.
-
-See: `daemonset-vxlan-route-keepalive.yaml` in the egressgateway-config
-bundle of the Scipio Nethersphere cluster manifests.
-
-**Warning**: this workaround races against keepVXLAN. If the patched image
-is deployed, this DaemonSet must be removed.
+1. Remove the `image:` block from `agent:` in `helmchart-operator.yaml`
+2. Update `version:` to the new release tag
+3. The official image will be used automatically
 
 ---
 
@@ -187,5 +194,4 @@ locally, no VXLAN tunnel needed.
 fix — VXLAN route is wiped by keepVXLAN before traffic can be forwarded.
 
 **Current workaround**: `nodeSelector` on site-specific apps (Home Assistant,
-autodiscover) to schedule pods on their site's node. This avoids cross-node
-egress entirely for those workloads.
+autodiscover) to schedule pods on their site's node, avoiding cross-node egress.
