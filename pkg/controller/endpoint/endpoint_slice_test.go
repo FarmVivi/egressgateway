@@ -887,6 +887,22 @@ func Test_newEndpoint(t *testing.T) {
 	t.Run("no ip", func(t *testing.T) {
 		newEndpoint(corev1.Pod{})
 	})
+	// A host-network pod reports the node address in Status.PodIPs. Accepting it
+	// would make the policy claim the node itself, and SNAT the traffic the node
+	// sends on its own behalf.
+	t.Run("host network pod is not an endpoint", func(t *testing.T) {
+		ep := newEndpoint(corev1.Pod{
+			Spec: corev1.PodSpec{HostNetwork: true},
+			Status: corev1.PodStatus{
+				PodIPs: []corev1.PodIP{
+					{IP: "10.2.2.30"},
+				},
+			},
+		})
+		if ep != nil {
+			t.Fatalf("expected no endpoint for a host-network pod, got %v", ep)
+		}
+	})
 }
 
 func Test_needUpdateEndpoint(t *testing.T) {

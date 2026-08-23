@@ -229,6 +229,19 @@ func getEndpointSlicePrefix(name string) string {
 }
 
 func newEndpoint(pod corev1.Pod) *v1beta1.EgressEndpoint {
+	// A host-network pod owns no address of its own: Status.PodIPs reports the
+	// IP of the node it runs on. Turning that into an endpoint makes the policy
+	// claim the node address, so every packet the NODE itself sends to a
+	// destination covered by the policy gets SNATed to the egress IP -- storage
+	// traffic, NFS mounts, host DNS, none of which the policy meant to touch.
+	// It also splits the node identity in two: early in the boot the agent has
+	// not programmed the rules yet, so the node still uses its own address,
+	// while later it uses the egress IP. Any peer filtering on the source
+	// address then sees two different clients depending on timing.
+	if pod.Spec.HostNetwork {
+		return nil
+	}
+
 	ipv4List := make([]string, 0)
 	ipv6List := make([]string, 0)
 
@@ -398,6 +411,9 @@ type podPredicate struct {
 func (p podPredicate) Create(createEvent event.CreateEvent) bool {
 	pod, ok := createEvent.Object.(*corev1.Pod)
 	if !ok {
+		return false
+	}
+	if pod.Spec.HostNetwork {
 		return false
 	}
 	if len(pod.Status.PodIPs) == 0 {
