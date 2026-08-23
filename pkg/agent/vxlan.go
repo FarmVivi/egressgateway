@@ -586,7 +586,11 @@ func parseMarkToInt(mark string) (int, error) {
 }
 
 func newEgressTunnelController(mgr manager.Manager, cfg *config.Config, log logr.Logger) error {
-	ruleRoute := route.NewRuleRoute(route.WithLogger(log))
+	ruleRoute := route.NewRuleRoute(
+		route.WithLogger(log),
+		route.WithIPv4(cfg.FileConfig.EnableIPv4),
+		route.WithIPv6(cfg.FileConfig.EnableIPv6),
+	)
 
 	r := &vxlanReconciler{
 		client:         mgr.GetClient(),

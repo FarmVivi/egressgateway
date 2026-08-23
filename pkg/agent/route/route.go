@@ -14,7 +14,9 @@ import (
 
 // NewRuleRoute creates a new RuleRoute with the provided options.
 func NewRuleRoute(options ...Option) *RuleRoute {
-	r := &RuleRoute{priority: 99}
+	// enableIPv4/enableIPv6 default to true so that callers which do not set
+	// them keep the previous behaviour of handling both families.
+	r := &RuleRoute{priority: 99, enableIPv4: true, enableIPv6: true}
 	for _, o := range options {
 		o(r)
 	}
@@ -37,9 +39,29 @@ func WithLogger(logger logr.Logger) Option {
 	}
 }
 
+// WithIPv4 enables or disables handling of the IPv4 family.
+func WithIPv4(enable bool) Option {
+	return func(r *RuleRoute) {
+		r.enableIPv4 = enable
+	}
+}
+
+// WithIPv6 enables or disables handling of the IPv6 family. It must be set to
+// false when the cluster runs without IPv6: on a host booted with
+// `ipv6.disable=1` the kernel refuses every AF_INET6 netlink request with
+// EAFNOSUPPORT ("address family not supported by protocol"), which would make
+// PurgeStaleRules fail on every reconcile loop.
+func WithIPv6(enable bool) Option {
+	return func(r *RuleRoute) {
+		r.enableIPv6 = enable
+	}
+}
+
 type RuleRoute struct {
-	log      logr.Logger
-	priority int
+	log        logr.Logger
+	priority   int
+	enableIPv4 bool
+	enableIPv6 bool
 }
 
 func (r *RuleRoute) PurgeStaleRules(marks map[int]struct{}, baseMark string) error {
@@ -64,20 +86,28 @@ func (r *RuleRoute) PurgeStaleRules(marks map[int]struct{}, baseMark string) err
 		return nil
 	}
 
-	rules, err := netlink.RuleListFiltered(netlink.FAMILY_V4, nil, netlink.RT_FILTER_MARK)
-	if err != nil {
-		return err
-	}
-	if err := clean(rules, netlink.FAMILY_V4); err != nil {
-		return err
+	// Both families are guarded: querying a family that the kernel does not
+	// support returns EAFNOSUPPORT, which would abort the whole purge. Every
+	// other IP-family-dependent code path in the agent is already guarded the
+	// same way against EnableIPv4/EnableIPv6.
+	if r.enableIPv4 {
+		rules, err := netlink.RuleListFiltered(netlink.FAMILY_V4, nil, netlink.RT_FILTER_MARK)
+		if err != nil {
+			return err
+		}
+		if err := clean(rules, netlink.FAMILY_V4); err != nil {
+			return err
+		}
 	}
 
-	rules, err = netlink.RuleListFiltered(netlink.FAMILY_V6, nil, netlink.RT_FILTER_MARK)
-	if err != nil {
-		return err
-	}
-	if err := clean(rules, netlink.FAMILY_V6); err != nil {
-		return err
+	if r.enableIPv6 {
+		rules, err := netlink.RuleListFiltered(netlink.FAMILY_V6, nil, netlink.RT_FILTER_MARK)
+		if err != nil {
+			return err
+		}
+		if err := clean(rules, netlink.FAMILY_V6); err != nil {
+			return err
+		}
 	}
 
 	return nil

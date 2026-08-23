@@ -251,6 +251,36 @@ func TestEnsureRule(t *testing.T) {
 	}
 }
 
+// TestPurgeStaleRulesDisabledFamily checks that a family which is turned off in
+// the agent configuration is never queried. On a host booted with
+// `ipv6.disable=1` the kernel answers every AF_INET6 netlink request with
+// EAFNOSUPPORT, which used to make PurgeStaleRules fail on every reconcile.
+func TestPurgeStaleRulesDisabledFamily(t *testing.T) {
+	marks := map[int]struct{}{1: {}, 2: {}}
+	baseMark := "1000"
+
+	cases := map[string]struct {
+		ruleRoute *RuleRoute
+	}{
+		"ipv6 disabled": {ruleRoute: NewRuleRoute(WithIPv6(false))},
+		"ipv4 disabled": {ruleRoute: NewRuleRoute(WithIPv4(false))},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			// The first lookup succeeds, a second one would fail: with one
+			// family disabled only a single lookup must ever be issued.
+			patch := gomonkey.ApplyFuncSeq(netlink.RuleListFiltered, []gomonkey.OutputCell{
+				{Values: gomonkey.Params{nil, nil}, Times: 1},
+				{Values: gomonkey.Params{nil, errors.New("address family not supported by protocol")}, Times: 1},
+			})
+			err := tc.ruleRoute.PurgeStaleRules(marks, baseMark)
+			patch.Reset()
+			assert.NoError(t, err)
+		})
+	}
+}
+
 func errPurgeStaleRulesRangeSize() []gomonkey.Patches {
 	patch := gomonkey.ApplyFuncReturn(markallocator.RangeSize, uint64(0), uint64(0), errors.New("some error"))
 	return []gomonkey.Patches{*patch}
