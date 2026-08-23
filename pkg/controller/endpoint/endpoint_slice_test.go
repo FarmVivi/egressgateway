@@ -905,6 +905,21 @@ func Test_newEndpoint(t *testing.T) {
 	})
 }
 
+func Test_withoutHostNetwork(t *testing.T) {
+	pods := []corev1.Pod{
+		{Spec: corev1.PodSpec{HostNetwork: true}},
+		{Spec: corev1.PodSpec{HostNetwork: false}},
+		{Spec: corev1.PodSpec{HostNetwork: true}},
+	}
+	got := withoutHostNetwork(pods)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 pod left, got %d", len(got))
+	}
+	if got[0].Spec.HostNetwork {
+		t.Fatal("a host-network pod survived the filter")
+	}
+}
+
 func Test_needUpdateEndpoint(t *testing.T) {
 	t.Run("ipv6", func(t *testing.T) {
 		needUpdateEndpoint(corev1.Pod{

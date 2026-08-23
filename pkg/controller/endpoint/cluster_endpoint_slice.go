@@ -219,6 +219,23 @@ func newClusterEndpointSlice(policy *v1beta1.EgressClusterPolicy) *v1beta1.Egres
 	}
 }
 
+// withoutHostNetwork drops host-network pods from a pod list.
+//
+// Filtering only when an endpoint is built is not enough: an endpoint already
+// stored in a slice is kept for as long as its pod still shows up in the list
+// the reconciler compares against, so entries recorded before this fix -- or by
+// an earlier release -- would never be pruned.
+func withoutHostNetwork(pods []corev1.Pod) []corev1.Pod {
+	res := make([]corev1.Pod, 0, len(pods))
+	for _, pod := range pods {
+		if pod.Spec.HostNetwork {
+			continue
+		}
+		res = append(res, pod)
+	}
+	return res
+}
+
 func listPodsByClusterPolicy(ctx context.Context, cli client.Client, policy *v1beta1.EgressClusterPolicy) ([]corev1.Pod, error) {
 	if policy.Spec.AppliedTo.NamespaceSelector == nil {
 		pods := new(corev1.PodList)
@@ -233,7 +250,7 @@ func listPodsByClusterPolicy(ctx context.Context, cli client.Client, policy *v1b
 		if err != nil {
 			return nil, err
 		}
-		return pods.Items, nil
+		return withoutHostNetwork(pods.Items), nil
 	}
 
 	nsList := new(corev1.NamespaceList)
@@ -269,7 +286,7 @@ func listPodsByClusterPolicy(ctx context.Context, cli client.Client, policy *v1b
 		res = append(res, pods.Items...)
 	}
 
-	return res, nil
+	return withoutHostNetwork(res), nil
 }
 
 func listClusterEndpointSlices(ctx context.Context, cli client.Client, policyName string) (*v1beta1.EgressClusterEndpointSliceList, error) {

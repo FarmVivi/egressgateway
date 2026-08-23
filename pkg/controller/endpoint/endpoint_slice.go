@@ -333,6 +333,7 @@ func listPodsByPolicy(ctx context.Context, cli client.Client, policy *v1beta1.Eg
 		Namespace:     policy.Namespace,
 	}
 	err = cli.List(ctx, pods, opt)
+	pods.Items = withoutHostNetwork(pods.Items)
 	return pods, err
 }
 
