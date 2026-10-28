@@ -84,6 +84,26 @@ func TestDiffLink(t *testing.T) {
 			l2:          &netlink.Vxlan{Port: 1235},
 			expConflict: true,
 		},
+		"case9 mac": {
+			l1: &netlink.Vxlan{LinkAttrs: netlink.LinkAttrs{
+				HardwareAddr: net.HardwareAddr{0x66, 0, 0, 0, 0, 0x01}}},
+			l2: &netlink.Vxlan{LinkAttrs: netlink.LinkAttrs{
+				HardwareAddr: net.HardwareAddr{0x66, 0, 0, 0, 0, 0x03}}},
+			expConflict: true,
+		},
+		"case10 same mac": {
+			l1: &netlink.Vxlan{LinkAttrs: netlink.LinkAttrs{
+				HardwareAddr: net.HardwareAddr{0x66, 0, 0, 0, 0, 0x01}}},
+			l2: &netlink.Vxlan{LinkAttrs: netlink.LinkAttrs{
+				HardwareAddr: net.HardwareAddr{0x66, 0, 0, 0, 0, 0x01}}},
+			expConflict: false,
+		},
+		"case11 mac not requested": {
+			l1: &netlink.Vxlan{},
+			l2: &netlink.Vxlan{LinkAttrs: netlink.LinkAttrs{
+				HardwareAddr: net.HardwareAddr{0x66, 0, 0, 0, 0, 0x01}}},
+			expConflict: false,
+		},
 	}
 
 	for name, linkCase := range cases {
@@ -123,6 +143,52 @@ func TestVxlan(t *testing.T) {
 		ipv4Net, nil, true)
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A device created with another node's MAC (agent start-up race) must be
+// recreated with the expected one, since peers address frames to it.
+func TestEnsureLinkRepairsMAC(t *testing.T) {
+	device := New()
+	wrong, err := net.ParseMAC("66:86:e2:ed:b6:17")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := net.ParseMAC("66:d2:d4:04:a8:dd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ipv4Net := &net.IPNet{
+		IP:   []byte{10, 6, 1, 22},
+		Mask: []byte{255, 255, 255, 0},
+	}
+
+	if err := device.EnsureLink("egress-mac", 102, 3457, wrong, 0, ipv4Net, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if link, err := netlink.LinkByName("egress-mac"); err == nil {
+			_ = netlink.LinkDel(link)
+		}
+	}()
+
+	if err := device.EnsureLink("egress-mac", 102, 3457, want, 0, ipv4Net, nil, false); err != nil {
+		t.Fatal(err)
+	}
+
+	link, err := netlink.LinkByName("egress-mac")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := link.Attrs().HardwareAddr.String(); got != want.String() {
+		t.Fatalf("link MAC = %s, want %s", got, want)
+	}
+	addrs, err := netlink.AddrList(link, netlink.FAMILY_V4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(addrs) != 1 || !addrs[0].IP.Equal(ipv4Net.IP) {
+		t.Fatalf("link addresses = %v, want %s", addrs, ipv4Net)
 	}
 }
 
