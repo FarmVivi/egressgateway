@@ -4,6 +4,7 @@
 package vxlan
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net"
@@ -265,6 +266,15 @@ func diffLink(l1, l2 netlink.Link) *conflictAttr {
 
 	v1 := l1.(*netlink.Vxlan)
 	v2 := l2.(*netlink.Vxlan)
+
+	// The MAC is published in the node's EgressTunnel and peers address
+	// their frames to it, so a device holding another address is unusable.
+	// Recreating it is the only fix: vxlan has no IFF_LIVE_ADDR_CHANGE and
+	// refuses a new address while up.
+	if len(v1.HardwareAddr) > 0 && len(v2.HardwareAddr) > 0 &&
+		!bytes.Equal(v1.HardwareAddr, v2.HardwareAddr) {
+		return &conflictAttr{name: "mac", got: v1.HardwareAddr.String(), exp: v2.HardwareAddr.String()}
+	}
 
 	if v1.VxlanId != v2.VxlanId {
 		return &conflictAttr{name: "vni", got: v1.VxlanId, exp: v2.VxlanId}
