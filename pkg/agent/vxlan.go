@@ -548,6 +548,11 @@ func (r *vxlanReconciler) initTunnelPeerMap() error {
 	}
 
 	for _, item := range list.Items {
+		// Only the local node's own tunnel describes the local VTEP. Peers are
+		// added by reconcileEgressTunnel, which also fills Parent and Mark.
+		if item.Name != r.cfg.EnvConfig.NodeName {
+			continue
+		}
 		if item.Status.Phase == egressv1.EgressTunnelReady {
 			vtep := r.parseVTEP(item.Status)
 			if vtep != nil {
